@@ -1,0 +1,13 @@
+# Private working material: never published
+HANDOVER.md
+PLAN.md
+RESEARCH.md
+server-config.json
+backup/
+recovery/
+design/
+Assets/
+folder-icon.svg
+tools/*
+!tools/test-merge.mjs
+.DS_Store
