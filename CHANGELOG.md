@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.2 - 2026-09-29
+
+Fixed:
+- A note card showing a page's whole body no longer says "Block not found" after you delete lines in it. It always shows what the page holds, and an emptied page gets one empty line to write in.
+- A note card sent to a page no longer says "Block not found" when its lines are deleted. It shows as an empty card of that page, and Edit gives it a fresh line at the end of the page.
+- A new note card no longer flashes "Empty card" for a moment before the editor opens.
+
 ## v1.0.1 - 2026-09-29
 
 Fixed:

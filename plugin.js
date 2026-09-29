@@ -3,7 +3,7 @@
 // Rendering is DOM + SVG inside one transformed layer (no <canvas>), so text is real text.
 // See PLAN.md / RESEARCH.md / HANDOVER.md in Thymer_plugins/whiteboard.
 
-const WB_VERSION = '1.0.1';
+const WB_VERSION = '1.0.2';
 const WB_PANEL = 'whiteboard-board';
 const WB_BOARDS = 'Boards';
 const WB_SCENE_FILE = 'whiteboard.json';
@@ -4965,6 +4965,21 @@ Object.assign(WbBoard.prototype, {
 	async noteLine(n) {
 		const rec = await this.plugin.record(n.recordGuid); if (!rec) return null;
 		let items = []; try { items = (await rec.getLineItems()) || []; } catch (e) {}
+		// A whole-page card has no lines of its own to remember: it is whatever the page holds now. Deleting every line from inside
+		// the card left it pointing at a line that was gone ("Block not found", his report 2026-09-29). An empty page gets one empty
+		// line to write in, like a new page in Thymer; single-flight, so a burst of renders adds only one.
+		if (n.whole) {
+			const tops = items.filter((x) => this.noteIsTop(x, rec));
+			if (tops.length) { const g = tops.map(liGuid).filter(Boolean); if (g.join() !== (n.lines || []).join()) { n.lines = g; n.lineGuid = g[0]; } return tops[0]; }
+			// guarded per PAGE on window, not per node: a remount or a live pull replaces the node objects, and five renders in a row each
+			// saw the empty page and added a line (measured). A page filled in the last 15 s is never filled again; its new line may not
+			// be in getLineItems yet, so the promise's line is handed out meanwhile.
+			const fills = (window.__wbPageFills = window.__wbPageFills || new Map()); const had = fills.get(rec.guid);
+			if (had && Date.now() - had.at < 15000) { const li = await had.p; if (li) { n.lines = [liGuid(li)]; n.lineGuid = n.lines[0]; } return li; }
+			const p = (async () => { try { return await rec.createLineItem(null, null, 'text', [{ type: 'text', text: '' }], null); } catch (e) { return null; } })();
+			fills.set(rec.guid, { at: Date.now(), p });
+			const li = await p; if (li) { n.lines = [liGuid(li)]; n.lineGuid = n.lines[0]; } return li;
+		}
 		const want = new Set(n.lines && n.lines.length ? n.lines : [n.lineGuid]);
 		const find = (list) => { for (const li of list || []) { if (want.has(li.guid)) return li; const k = find(li.children || []); if (k) return k; } return null; };
 		return find(items) || items.find((li) => want.has(li.guid)) || null;
@@ -4987,7 +5002,7 @@ Object.assign(WbBoard.prototype, {
 	noteBlockHtml(tops, items) {
 		const kidsOf = (g) => items.filter((x) => liRaw(x).pguid === g);
 		const rows = (tops || []).map((k, i) => this.noteRowHtml(k, 1, i, tops, kidsOf)).join('');
-		return rows || '<div class="listitem listitem-text"><div class="line-div"><span class="lineitem-text wb-nl-empty">Empty card</span></div></div>';
+		return rows; // an empty card shows its header and Edit only: the "Empty card" text flashed for a second on every new card (his report 2026-09-29)
 	},
 	// The geometry is read out of Thymer's own renderer (2026-09-20), not guessed: the indent is level x 30 px and sits on the
 	// row's CHROME (dot, number, checkbox) when it has one, with no margin on the line itself, and on the line only when the
@@ -5105,7 +5120,15 @@ Object.assign(WbBoard.prototype, {
 		const my = (n._fetchSeq = (n._fetchSeq || 0) + 1);
 		(async () => { await this.noteEnsureLines(n); return this.noteLine(n); })().then(async (li) => {
 			if (this.destroyed || !el.isConnected || my !== n._fetchSeq) return;
-			if (!li) { el.innerHTML = '<div class="wb-nl wb-card-missing">Block not found</div>'; this.measureNote(n, el); return; }
+			if (!li) {
+				// a card sent to a page whose lines were all deleted (from the card or on the page) is simply an empty card of that page:
+				// its header and Edit stay, and Edit gives it a fresh line at the end of the page (noteEdit). "Block not found" is kept for
+				// a page that is gone. His ruling 2026-09-29.
+				let page = null; if (n.type === 'note' && n.recordGuid !== this.rec.guid) { try { page = await this.plugin.record(n.recordGuid); } catch (e) {} }
+				if (this.destroyed || !el.isConnected || my !== n._fetchSeq) return;
+				if (page) { el.innerHTML = '<div class="wb-nbody wb-snap"><div class="editor-panel"><div class="listview-focus"><div class="listview-items"></div></div></div></div>'; this.noteCardChrome(n, el); this.measureNote(n, el); return; }
+				el.innerHTML = '<div class="wb-nl wb-card-missing">Block not found</div>'; this.measureNote(n, el); return;
+			}
 			// the saved copy is good until the record changed after it was taken
 			let got = null, tops = []; if (!n._snap) { try { got = await this.noteItems(n); if (got) tops = this.noteTops(n, li, got); } catch (e) { got = null; } }
 			// the saved copy is good for as long as the rows it was taken of are unchanged (a copy from before 0.29 has no
@@ -5161,6 +5184,13 @@ Object.assign(WbBoard.prototype, {
 	// --- editing: the REAL editor, floated over the card (Quick Capture's recipe) ------------------------------
 	async noteEdit(n) {
 		if (!n || !this.isNoteNode(n)) return; if (this._noteEditor) { if (this._noteEditor.n === n) return; await this.noteEditClose(); }
+		// an emptied card that was sent to a page: its lines are gone, so it gets one fresh empty line at the end of that page to write in
+		if (n.type === 'note' && n.recordGuid !== this.rec.guid && !n.whole && !(await this.noteLine(n))) {
+			const page = await this.plugin.record(n.recordGuid); if (!page) { this.plugin.toast('The page behind this card is gone.'); return; }
+			let li = null; try { li = await page.createLineItem(null, await lastTopLevel(page), 'text', [{ type: 'text', text: '' }], null); } catch (e) {}
+			if (!li) { this.plugin.toast('Could not open the card.'); return; }
+			n.lines = [liGuid(li)]; n.lineGuid = n.lines[0]; delete n._snap; delete n.snap; delete n.snapSig; this.scheduleSave(); await wbSleep(300);
+		}
 		const ws = this.plugin.getWorkspaceGuid ? this.plugin.getWorkspaceGuid() : (this.panel.getNavigation() || {}).workspaceGuid;
 		const grid = document.querySelector('.panels-grid'); const gridCols = grid ? grid.style.gridTemplateColumns : null;
 		let panel = null; try { panel = await this.plugin.ui.createPanel(); } catch (e) {}
