@@ -70,6 +70,10 @@ Boards open on Thymer's phone app with touch controls: one finger pans, two fing
 
 Link cards get their title, description and image from [microlink.io](https://microlink.io), because Thymer cannot read other websites directly. The address you paste is sent to microlink.io once, when the card is made; nothing else is.
 
+## How it's built
+
+Whiteboard is written from scratch in plain DOM and SVG, with no canvas library and no dependencies. That is deliberate: the board is made of regular elements, so Thymer's own pieces can live on it. Page cards are drawn by Thymer's own card renderer, and note cards are Thymer's real editor. Relations are SVG, and a small 2D canvas is used only for the minimap and the board previews in the Boards view. A board is saved as one JSON scene file in its page, in a format loosely modelled on [JSON Canvas](https://jsoncanvas.org), the open format from Obsidian.
+
 ## Feedback
 
 This is the first public release. Ideas, questions and bug reports are very welcome in [Issues](../../issues). For anything to do with saving or sync, **Board settings > Copy diagnostics** gives a short report that helps a lot.
