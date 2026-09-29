@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.3 - 2026-09-29
+
+Fixed:
+- Whiteboard no longer creates collections on its own. Earlier versions could add empty collections named "Untitled Collection" or extra copies of "Whiteboard sync" to your workspace, most often right after the app started. They are safe to delete: keep only the "Whiteboard sync" collection that holds a record, or delete all of them if you like.
+
 ## v1.0.2 - 2026-09-29
 
 Fixed:

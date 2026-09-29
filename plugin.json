@@ -1,6 +1,6 @@
 {
   "name": "Whiteboard",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "global_plugin",
   "icon": "ti-layout-board",
   "description": "An infinite whiteboard for Thymer, where your pages and notes sit on the canvas next to post-its, shapes and mind maps."

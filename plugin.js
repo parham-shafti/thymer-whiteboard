@@ -3,7 +3,7 @@
 // Rendering is DOM + SVG inside one transformed layer (no <canvas>), so text is real text.
 // See PLAN.md / RESEARCH.md / HANDOVER.md in Thymer_plugins/whiteboard.
 
-const WB_VERSION = '1.0.2';
+const WB_VERSION = '1.0.3';
 const WB_PANEL = 'whiteboard-board';
 const WB_BOARDS = 'Boards';
 const WB_SCENE_FILE = 'whiteboard.json';
@@ -2894,26 +2894,21 @@ class Plugin extends AppPlugin {
 		const ready = wbSyncReady(); const was = this._syncWas; this._syncWas = ready;
 		if (!ready || was) return;
 		wbTrace('sync ready (' + (WB_SYNC.why || '?') + ')');
-		setTimeout(() => this.ensureSyncCollection().catch(() => {}), 5000);
 		for (const b of [...this.boards.values()]) this.checkBoardFresh(b).catch(() => {});
 	}
 	async checkBoardFresh(b) { if (b && !b.destroyed) return b.pullRemote('sync ready'); } // drawn from an older copy? the pull merges what the server has
 	// The sync gate needs a finished sync round as evidence. On a quiet workspace none may come, so a save that has waited 5 s writes
 	// a timestamp into a record of a hidden collection of its own: that commit forces a round trip, and its reply is the evidence.
 	// Nothing on a board is touched, so even a device that is out of step cannot overwrite anything with it.
-	async findSyncCollection() { const all = (await this.data.getAllCollections()) || []; return all.find((c) => { try { return c.getName() === WB_SYNC_COL; } catch (e) { return false; } }) || null; }
-	async ensureSyncCollection() {
-		if (this._syncColBusy || !wbSyncReady()) return; this._syncColBusy = true;
-		try {
-			if (await this.findSyncCollection()) return;
-			const col = await this.data.createCollection(); if (!col) return;
-			const conf = col.getConfiguration(); conf.name = WB_SYNC_COL; conf.icon = 'ti-skull'; conf.item_name = 'Check'; conf.description = 'Whiteboard writes a timestamp here to make Thymer finish a sync round before a board is saved. Nothing else lives here.'; conf.sidebar_display_mode = { mode: 'hidden_completely' }; conf.show_cmdpal_items = false;
-			await col.saveConfiguration(conf); await wbSleep(600);
-			let named = false; try { named = col.getConfiguration().name === WB_SYNC_COL; } catch (e) {}
-			if (!named) { await col.saveConfiguration(conf); await wbSleep(600); try { named = col.getConfiguration().name === WB_SYNC_COL; } catch (e) {} }
-			wbTrace('sync collection ' + (named ? 'created' : 'created, name did not stick'));
-		} catch (e) { console.warn('[Whiteboard] sync collection', e); } finally { this._syncColBusy = false; }
+	async findSyncCollection() {
+		const all = ((await this.data.getAllCollections()) || []).filter((c) => { try { return c.getName() === WB_SYNC_COL; } catch (e) { return false; } });
+		for (const c of all) { let n = 0; try { n = ((await c.getAllRecords()) || []).length; } catch (e) {} if (n) return c; } // the one that holds the ping record
+		return null;
 	}
+	// NEVER creates anything (his ruling 2026-09-29, after the sync ping had made 8 empty "Untitled Collection"s and 2 duplicate
+	// "Whiteboard sync"s in his workspace: a freshly started client does not yet list every collection, so "not found" was wrong).
+	// The ping only uses an existing "Whiteboard sync"; without one, the gate waits for ordinary sync traffic.
+	async ensureSyncCollection() {}
 	syncPing() {
 		if (this._pingP || Date.now() - (this._pingAt || 0) < 15000) return this._pingP;
 		this._pingAt = Date.now();
@@ -2924,8 +2919,7 @@ class Plugin extends AppPlugin {
 				// collection; ensureSyncCollection makes it while the device is in step. Without it the gate waits for ordinary traffic.
 				const col = await this.findSyncCollection(); if (!col) return;
 				let recs = []; try { recs = (await col.getAllRecords()) || []; } catch (e) {}
-				let rec = recs[0] ? await this.record(recs[0].guid) : null;
-				if (!rec) { let g = null; try { g = col.createRecord('Sync check'); } catch (e) {} if (typeof g !== 'string') return; rec = await wbRecordPoll(this, g, 20); if (!rec) return; }
+				const rec = recs[0] ? await this.record(recs[0].guid) : null; if (!rec) return; // never creates a record either
 				rec.prop('Title').set('Sync check ' + new Date().toISOString()); wbTrace('sync ping');
 			} catch (e) { console.warn('[Whiteboard] sync ping', e); } finally { this._pingP = null; }
 		})();
