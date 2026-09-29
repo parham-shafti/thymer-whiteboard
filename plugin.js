@@ -3,7 +3,7 @@
 // Rendering is DOM + SVG inside one transformed layer (no <canvas>), so text is real text.
 // See PLAN.md / RESEARCH.md / HANDOVER.md in Thymer_plugins/whiteboard.
 
-const WB_VERSION = '1.0.0';
+const WB_VERSION = '1.0.1';
 const WB_PANEL = 'whiteboard-board';
 const WB_BOARDS = 'Boards';
 const WB_SCENE_FILE = 'whiteboard.json';
@@ -1176,7 +1176,10 @@ class WbBoard {
 	setTool(id) {
 		this.tool = id;
 		for (const k in this.toolEls) this.toolEls[k].classList.toggle('is-active', k === id);
-		this.canvas.className = 'wb-canvas wb-tool-' + id; this.applyBg();
+		// swap only the tool class: overwriting className also dropped the board's own light/dark theme class, so a board with a
+		// theme of its own flashed to Thymer's theme on every tool change (his recording 2026-09-29)
+		for (const c of [...this.canvas.classList]) if (c.startsWith('wb-tool-')) this.canvas.classList.remove(c);
+		this.canvas.classList.add('wb-tool-' + id); this.applyBg();
 		if (id !== 'select') this.commitEdit();
 	}
 
@@ -2237,6 +2240,15 @@ class WbBoard {
 	// The colour control sits FIRST in every element toolbar, followed by a separator. Built branch by branch it had drifted:
 	// first for a post-it, second for a shape or a frame, last for a bubble or a folder. One rule beats editing eight branches,
 	// and it also catches the toolbars the overrides add later. Runs after the whole override chain has built the bar.
+	// A card that shows a page (page card, line card, or a note card living on a page) only leaves the board when deleted; the page
+	// is never touched. The button says so (his ask 2026-09-29). Done last, because several toolbar builders find this button by its
+	// "Delete" title to insert their own buttons before it.
+	relabelDelete() {
+		const del = [...this.ctx.querySelectorAll('.wb-tb')].find((x) => x.title === 'Delete'); if (!del) return;
+		const sel = [...this.selected].map((id) => this.nodeById(id)).filter(Boolean); if (!sel.length) return;
+		const pageBacked = (n) => (n.type === 'card' && n.recordGuid) || n.type === 'line' || (n.type === 'note' && (n.lines || n.whole || n.recordGuid !== this.rec.guid));
+		if (sel.every(pageBacked)) del.title = 'Remove from board';
+	}
 	hoistColor() {
 		const c = this.ctx; if (!c) return;
 		const dot = [...c.children].find((b) => b.classList && b.classList.contains('wb-tb') && b.querySelector('.wb-cdot'));
@@ -2741,6 +2753,11 @@ class Plugin extends AppPlugin {
 		// device still holds a backup with content, the guard is armed from THAT count and the board refuses to save until the
 		// user decides. Never awaited by the mount itself, and it degrades to "no local copy" if IndexedDB is slow or wedged.
 		if (!scene.nodes.length) Promise.race([wbBackupList(rec.guid), wbSleep(2000).then(() => [])]).then((list) => {
+			// This device's newest version IS the empty one, at the server's revision or later: it was emptied here on purpose (an empty
+			// save only passes the save guards when the user deleted everything or restored an empty version). Nothing to guard; an
+			// emptied board used to reopen as "Unsaved changes" for ever (his TEST board, 2026-09-29).
+			const newest = (list || []).reduce((a, b) => ((b.rev || 0) > ((a && a.rev) || -1) ? b : a), null);
+			if (newest && !((newest.count || 0) > 0) && (newest.rev || 0) >= (scene.rev || 0)) return;
 			const had = (list || []).find((b) => (b.count || 0) > 2); if (!had || board.destroyed || board.scene.nodes.length) return;
 			board.lastSavedNodes = had.count; board.setSaveState('refused');
 			this.toast('This board opened empty, but this device has a version with ' + had.count + ' items. Saving is paused: use the board menu, Restore an earlier version.');
@@ -2877,24 +2894,35 @@ class Plugin extends AppPlugin {
 		const ready = wbSyncReady(); const was = this._syncWas; this._syncWas = ready;
 		if (!ready || was) return;
 		wbTrace('sync ready (' + (WB_SYNC.why || '?') + ')');
+		setTimeout(() => this.ensureSyncCollection().catch(() => {}), 5000);
 		for (const b of [...this.boards.values()]) this.checkBoardFresh(b).catch(() => {});
 	}
 	async checkBoardFresh(b) { if (b && !b.destroyed) return b.pullRemote('sync ready'); } // drawn from an older copy? the pull merges what the server has
 	// The sync gate needs a finished sync round as evidence. On a quiet workspace none may come, so a save that has waited 5 s writes
 	// a timestamp into a record of a hidden collection of its own: that commit forces a round trip, and its reply is the evidence.
 	// Nothing on a board is touched, so even a device that is out of step cannot overwrite anything with it.
+	async findSyncCollection() { const all = (await this.data.getAllCollections()) || []; return all.find((c) => { try { return c.getName() === WB_SYNC_COL; } catch (e) { return false; } }) || null; }
+	async ensureSyncCollection() {
+		if (this._syncColBusy || !wbSyncReady()) return; this._syncColBusy = true;
+		try {
+			if (await this.findSyncCollection()) return;
+			const col = await this.data.createCollection(); if (!col) return;
+			const conf = col.getConfiguration(); conf.name = WB_SYNC_COL; conf.icon = 'ti-skull'; conf.item_name = 'Check'; conf.description = 'Whiteboard writes a timestamp here to make Thymer finish a sync round before a board is saved. Nothing else lives here.'; conf.sidebar_display_mode = { mode: 'hidden_completely' }; conf.show_cmdpal_items = false;
+			await col.saveConfiguration(conf); await wbSleep(600);
+			let named = false; try { named = col.getConfiguration().name === WB_SYNC_COL; } catch (e) {}
+			if (!named) { await col.saveConfiguration(conf); await wbSleep(600); try { named = col.getConfiguration().name === WB_SYNC_COL; } catch (e) {} }
+			wbTrace('sync collection ' + (named ? 'created' : 'created, name did not stick'));
+		} catch (e) { console.warn('[Whiteboard] sync collection', e); } finally { this._syncColBusy = false; }
+	}
 	syncPing() {
 		if (this._pingP || Date.now() - (this._pingAt || 0) < 15000) return this._pingP;
 		this._pingAt = Date.now();
 		this._pingP = (async () => {
 			try {
-				const all = (await this.data.getAllCollections()) || [];
-				let col = all.find((c) => { try { return c.getName() === WB_SYNC_COL; } catch (e) { return false; } });
-				if (!col) {
-					col = await this.data.createCollection(); if (!col) return;
-					const conf = col.getConfiguration(); conf.name = WB_SYNC_COL; conf.icon = 'ti-skull'; conf.item_name = 'Check'; conf.description = 'Whiteboard writes a timestamp here to make Thymer finish a sync round before a board is saved. Nothing else lives here.'; conf.sidebar_display_mode = { mode: 'hidden_completely' }; conf.show_cmdpal_items = false;
-					await col.saveConfiguration(conf); await wbSleep(400);
-				}
+				// A device that pings is by definition NOT in step, so its collection list can lack "Whiteboard sync" even when it exists:
+				// creating it here made duplicates (two empty "Untitled Collection"s in his workspace, 2026-09-29). The ping only USES the
+				// collection; ensureSyncCollection makes it while the device is in step. Without it the gate waits for ordinary traffic.
+				const col = await this.findSyncCollection(); if (!col) return;
 				let recs = []; try { recs = (await col.getAllRecords()) || []; } catch (e) {}
 				let rec = recs[0] ? await this.record(recs[0].guid) : null;
 				if (!rec) { let g = null; try { g = col.createRecord('Sync check'); } catch (e) {} if (typeof g !== 'string') return; rec = await wbRecordPoll(this, g, 20); if (!rec) return; }
@@ -3401,7 +3429,7 @@ Object.assign(WbBoard.prototype, {
 		};
 		const mark = () => rows.forEach((r, i) => r.classList.toggle('is-on', i === active));
 		inp.addEventListener('input', () => { clearTimeout(inp._t); inp._t = setTimeout(paint, 120); });
-		inp.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(rows.length - 1, active + 1); mark(); } else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(0, active - 1); mark(); } else if (e.key === 'Enter') { e.preventDefault(); if (rows[active]) rows[active].click(); } });
+		inp.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); this.plugin.closeMenus(); return; } /* his ask 2026-09-29: back out of the picker, the Page tool stays chosen */ if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(rows.length - 1, active + 1); mark(); } else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(0, active - 1); mark(); } else if (e.key === 'Enter') { e.preventDefault(); if (rows[active]) rows[active].click(); } });
 		this.host.appendChild(pop); this.plugin._pop = pop;
 		const hr = this.host.getBoundingClientRect(); pop.style.left = Math.max(hr.left + 8, Math.min(anchorPt.x, hr.right - 328)) + 'px'; pop.style.top = Math.max(hr.top + 8, Math.min(anchorPt.y, hr.bottom - 380)) + 'px';
 		const out = (e) => { if (!pop.contains(e.target)) this.plugin.closeMenus(); }; document.addEventListener('pointerdown', out, true); pop._out = out;
@@ -4862,6 +4890,10 @@ Object.assign(WbBoard.prototype, {
 		const guids = tops.map(liGuid).filter(Boolean); if (!guids.length) return null;
 		return { id: at.id, type: 'note', x: at.x, y: at.y, w: Math.max(360, at.w || 0), h: Math.max(200, at.h || 0), recordGuid: guid, lines: guids, lineGuid: guids[0], attached: true, whole: true, color: null, minH: 200 };
 	},
+	async noteTopLines(n) {
+		if (n.recordGuid === this.rec.guid && !n.lines) { const li = await this.noteLine(n); if (!li) return []; let items = []; try { items = (await this.rec.getLineItems()) || []; } catch (e) {} const kids = items.filter((x) => liRaw(x).pguid === liGuid(li)); return kids.length ? kids : [li]; }
+		await this.noteEnsureLines(n); const got = await this.noteItems(n); const range = got && this.noteRange(n, got.rec, got.items); return range ? range.tops : [];
+	},
 	async turnIntoBodyCard(n) {
 		const card = await this.bodyCardNode(n.recordGuid, n); if (!card || this.destroyed) return;
 		this.pushHistory();
@@ -5201,7 +5233,7 @@ Object.assign(WbBoard.prototype, {
 		ind.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); this.indentUnder = !this.indentUnder; try { localStorage.setItem('wb_indent_under', this.indentUnder ? '1' : '0'); } catch (x) {} paintInd(); }, true);
 		dest.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); this.noteAttachPicker(dest, n, { above: true }); }, true);
 		const paintAction = () => { send.textContent = ed.pendingDest ? 'Send' : 'Done'; send.title = ed.pendingDest ? 'Send the block to the page you picked' : 'Close the editor'; }; ed.paintAction = paintAction; paintAction();
-		send.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); if (ed.pendingDest) { this.applyDest(ed.pendingDest); return; } this.noteEditClose(); }, true);
+		send.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); if (ed.pendingDest) { const d = ed.pendingDest; this.popNode = n; Promise.resolve(this.noteEditClose()).catch(() => {}).then(() => this.applyDest(d)); return; } this.noteEditClose(); }, true); // the editor closes FIRST: moving the lines deletes the container the editor is zoomed into ("Container root item disappeared", his recording 2026-09-29), and the card's saved picture was taken from that broken editor
 		const paintLoc = async () => { const h = await this.noteHome(n); if (!head.isConnected) return; head.querySelector('.ti').className = 'ti ' + h.icon; head.querySelector('.wb-ctitle-lbl').textContent = h.name; if (!ed.pendingDest) { dest.querySelector('.ti').className = 'ti ' + h.icon; dest.querySelector('.wb-cdest-lbl').textContent = h.name; } };
 		ed.paintLoc = paintLoc;
 		// Quick Capture's mechanism: a pick only SETS the destination; Send moves the block
@@ -5654,7 +5686,7 @@ Object.assign(WbBoard.prototype, {
 		const input = pop.querySelector('.wb-dpop-input'); const list = pop.querySelector('.wb-dpop-list');
 		try { this.recordsCache = this.plugin.data.getAllRecords() || []; } catch (e) { this.recordsCache = []; }
 		this.loadCollMap(); this.renderDefaultDestOptions(list);
-		input.addEventListener('input', () => { if (this.newNoteMode) return; clearTimeout(this.searchTimer); const q = input.value.trim(); this.searchTimer = setTimeout(() => this.runDestSearch(q, list), 180); });
+		input.addEventListener('input', () => { if (this.newNoteMode) { if (this.newNoteFilter) this.newNoteFilter(); return; } clearTimeout(this.searchTimer); const q = input.value.trim(); this.searchTimer = setTimeout(() => this.runDestSearch(q, list), 180); });
 		input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'ArrowDown') { e.preventDefault(); this.setDestSel(this.destSel + 1); } else if (e.key === 'ArrowUp') { e.preventDefault(); this.setDestSel(this.destSel - 1); } else if (e.key === 'Enter') { e.preventDefault(); const o = this.destOpts[this.destSel]; if (o) o.pick(); } else if (e.key === 'Escape') { e.preventDefault(); this.closeDestPicker(); } });
 		const r = anchor.getBoundingClientRect(); const hr = this.host.getBoundingClientRect(); const w = this.destMode ? 280 : Math.min(560, window.innerWidth - 24);
 		pop.style.left = Math.max(hr.left + 8, Math.min(r.left, hr.right - w - 8)) + 'px';
@@ -5682,23 +5714,45 @@ Object.assign(WbBoard.prototype, {
 		this.addDestOpt(list, nn, () => this.pickNewNote(list));
 		this.sec(list, 'Type to search pages, lines, or a date');
 	},
+	// "New note in a collection", in two steps (his ruling 2026-09-29: the old single field asked for a title while it looked like it
+	// searched the collections): 1. find and pick the collection, the field filters the list; 2. the title, prefilled with the card's
+	// first line and selected, then "Create page in <collection>" (Enter). No title typed = the first line becomes the title.
 	async pickNewNote(list) {
 		const input = this.popEl && this.popEl.querySelector('.wb-dpop-input'); if (!input) return;
-		clearTimeout(this.searchTimer); const my = ++this.searchToken; this.newNoteMode = true; input.value = ''; input.placeholder = 'Enter a title for the new note'; this.resetDestList(list); this.sec(list, 'Loading collections'); input.focus();
+		clearTimeout(this.searchTimer); const my = ++this.searchToken; this.newNoteMode = true; this.newNoteFilter = null; input.value = ''; input.placeholder = 'Find a collection'; this.resetDestList(list); this.sec(list, 'Loading collections'); input.focus();
 		let cols = []; try { cols = (await this.plugin.refreshCols()) || []; } catch (e) {}
 		if (!this.popEl || !this.newNoteMode || my !== this.searchToken) return;
 		cols = cols.filter((c) => { try { return c && typeof c.createRecord === 'function' && !(c.isJournalPlugin && c.isJournalPlugin()) && !this.plugin.isDynamicCollection(c) && !this.plugin.isExcludedCollection(c) && c.getName() !== WB_BOARDS; } catch (e) { return false; } });
 		cols.sort((a, b) => (a.getName() || '').localeCompare(b.getName() || ''));
-		this.resetDestList(list); this.sec(list, 'New note');
-		const back = document.createElement('div'); back.className = 'wb-opt'; back.innerHTML = '<span class="ti ti-arrow-left"></span><span class="wb-opt-text">Back to destinations</span>';
-		this.addDestOpt(list, back, () => { this.newNoteMode = false; this.searchToken++; input.value = ''; input.placeholder = WB_DEST_PLACEHOLDER; this.renderDefaultDestOptions(list); input.focus(); });
-		this.sec(list, 'Choose a collection');
-		for (const c of cols) {
-			let icon = ''; try { icon = collIconFromConf(c.getConfiguration()); } catch (e) {} icon = icon || 'ti-folder';
-			const opt = document.createElement('div'); opt.className = 'wb-opt'; opt.innerHTML = '<span class="ti ' + esc(icon) + '"></span><span class="wb-opt-text">' + esc(c.getName() || 'Collection') + '</span>';
-			this.addDestOpt(list, opt, () => { const title = input.value.trim(); this.newNoteMode = false; this.chooseDest({ kind: 'newnote', collGuid: c.getGuid(), name: title || 'Untitled', collName: c.getName() || '', icon }); });
-		}
-		if (this.destOpts.length > 1) this.setDestSel(1);
+		const paint = () => {
+			const q = input.value.trim().toLowerCase();
+			this.resetDestList(list); this.sec(list, 'New note');
+			const back = document.createElement('div'); back.className = 'wb-opt'; back.innerHTML = '<span class="ti ti-arrow-left"></span><span class="wb-opt-text">Back to destinations</span>';
+			this.addDestOpt(list, back, () => { this.newNoteMode = false; this.newNoteFilter = null; this.searchToken++; input.value = ''; input.placeholder = WB_DEST_PLACEHOLDER; this.renderDefaultDestOptions(list); input.focus(); });
+			const shown = cols.filter((c) => !q || (c.getName() || '').toLowerCase().includes(q));
+			this.sec(list, shown.length ? 'Choose a collection' : 'No collection matches');
+			for (const c of shown) {
+				let icon = ''; try { icon = collIconFromConf(c.getConfiguration()); } catch (e) {} icon = icon || 'ti-folder';
+				const opt = document.createElement('div'); opt.className = 'wb-opt'; opt.innerHTML = '<span class="ti ' + esc(icon) + '"></span><span class="wb-opt-text">' + esc(c.getName() || 'Collection') + '</span>';
+				this.addDestOpt(list, opt, () => this.pickNewNoteTitle(list, c, icon));
+			}
+			if (this.destOpts.length > 1) this.setDestSel(1);
+		};
+		this.newNoteFilter = paint; paint();
+	},
+	async pickNewNoteTitle(list, c, icon) {
+		const input = this.popEl && this.popEl.querySelector('.wb-dpop-input'); if (!input) return;
+		this.newNoteFilter = null; const my = ++this.searchToken;
+		let first = ''; try { const tops = this.popNode ? await this.noteTopLines(this.popNode) : []; first = tops.length ? this.noteText(tops[0]).split('\n')[0].slice(0, 120) : ''; } catch (e) {}
+		if (!this.popEl || !this.newNoteMode || my !== this.searchToken) return;
+		const name = c.getName() || 'Collection';
+		input.value = first; input.placeholder = 'Title for the new page'; input.focus(); try { input.select(); } catch (e) {}
+		this.resetDestList(list); this.sec(list, 'New page in ' + name);
+		const back = document.createElement('div'); back.className = 'wb-opt'; back.innerHTML = '<span class="ti ti-arrow-left"></span><span class="wb-opt-text">Back to collections</span>';
+		this.addDestOpt(list, back, () => this.pickNewNote(list));
+		const create = document.createElement('div'); create.className = 'wb-opt'; create.innerHTML = '<span class="ti ti-file-plus"></span><span class="wb-opt-text">Create page in ' + esc(name) + '</span>';
+		this.addDestOpt(list, create, () => { const title = input.value.trim(); this.newNoteMode = false; this.chooseDest({ kind: 'newnote', collGuid: c.getGuid(), name: title || 'New page', typed: !!title && title !== first, collName: name, icon }); });
+		this.setDestSel(1);
 	},
 	async loadCollMap() { try { const cols = await this.plugin.refreshCols(); const m = {}; for (const c of (cols || [])) { let g = null; try { g = c.getGuid ? c.getGuid() : null; } catch (e) {} let nm = ''; try { nm = c.getName ? c.getName() : ''; } catch (e) {} let ic = ''; try { ic = collIconFromConf(c.getConfiguration()); } catch (e) {} if (g) m[g] = { name: nm, icon: ic }; } this.collMap = m; } catch (e) {} },
 	collName(guid) { const e = guid && this.collMap && this.collMap[guid]; return (e && e.name) || ''; },
@@ -5781,6 +5835,9 @@ Object.assign(WbBoard.prototype, {
 				label = dest.dateLabel ? ('the Journal, ' + dest.dateLabel) : "today's Journal"; parentTarget = destRec; anchor = await lastTopLevel(destRec);
 			} else if (dest.kind === 'newnote') {
 				const col = ((await this.plugin.refreshCols()) || []).find((c) => c.getGuid() === dest.collGuid); if (!col) { this.plugin.toast('That collection is gone.'); return; }
+				// no title typed: the card's first line becomes the page title and leaves the body, like "Turn into a page" (his ask
+				// 2026-09-29: a new page used to be called "Untitled")
+				if (!dest.typed) { try { const tops = await this.noteTopLines(n); const t = tops.length ? this.noteText(tops[0]).split('\n')[0].slice(0, 120) : ''; if (t) { dest.name = t; dest.titleLine = liGuid(tops[0]); } else dest.name = 'Untitled'; } catch (e) { dest.name = 'Untitled'; } }
 				const guid = await this.plugin.createPage(dest.name || 'Untitled', col); if (!guid) return;
 				destRec = await wbRecordPoll(this.plugin, guid, 30); if (!destRec) { this.plugin.toast('The new page did not show up in time.'); return; }
 				label = dest.name + ' (new page in ' + dest.collName + ')'; parentTarget = destRec; anchor = null;
@@ -5800,6 +5857,7 @@ Object.assign(WbBoard.prototype, {
 		} catch (e) { this.plugin.toast('Could not resolve the destination.'); return; }
 		const ok = await this.noteMoveLines(n, parentTarget, anchor);
 		if (!ok) { this.plugin.toast('Could not move the block there.'); return; }
+		if (dest.kind === 'newnote' && dest.titleLine) { try { const items = (await destRec.getLineItems()) || []; const first = items.find((x) => this.noteText(x) === dest.name && this.noteIsTop(x, destRec)); if (first && !items.some((x) => liRaw(x).pguid === liGuid(first))) { await first.delete(); if (n.lines) { n.lines = n.lines.filter((g) => g !== liGuid(first)); if (n.lines.length) n.lineGuid = n.lines[0]; } } } catch (e) {} } // the first line is the title now
 		this.pushHistory(); n.recordGuid = rowGuid(destRec) || n.recordGuid; n.attached = true; n._rev = (n._rev || 0) + 1; this.renderNode(n); this.buildCtx(); this.scheduleSave();
 		if (this._noteEditor && this._noteEditor.n === n) { if (this._noteEditor.setDest) this._noteEditor.setDest(null); if (this._noteEditor.paintAction) this._noteEditor.paintAction(); }
 		this.plugin.toast('Card attached to ' + label + '.');
@@ -6547,5 +6605,5 @@ const WB_PHONE_CSS = [
 {
 	// The toolbar is placed AFTER the whole override chain has built it; the base class measured a much narrower bar.
 	const baseBuildCtxFinal = WbBoard.prototype.buildCtx;
-	WbBoard.prototype.buildCtx = function () { baseBuildCtxFinal.call(this); if (this.ctx) { this.hoistColor(); if (this.host.classList.contains('wb-phone')) this.dockCtx(); else this.placeCtx(); } this.host.classList.toggle('wb-has-ctx', !!this.ctx); };
+	WbBoard.prototype.buildCtx = function () { baseBuildCtxFinal.call(this); if (this.ctx) { this.hoistColor(); this.relabelDelete(); if (this.host.classList.contains('wb-phone')) this.dockCtx(); else this.placeCtx(); } this.host.classList.toggle('wb-has-ctx', !!this.ctx); };
 }

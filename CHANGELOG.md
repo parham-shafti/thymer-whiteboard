@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.1 - 2026-09-29
+
+Fixed:
+- A board with a light or dark theme of its own no longer flashes to Thymer's theme when you change tools.
+- A board you emptied on purpose no longer reopens with saving paused and "Unsaved changes".
+- Esc closes the page picker, and the Page tool stays chosen.
+- The delete button says "Remove from board" on cards that show a page, since the page itself is never touched.
+- Sending a note card to a page no longer leaves "Container root item disappeared" on the card.
+- "New note in a collection" is now two steps: find the collection, then give the page a title (prefilled with the card's first line, which moves into the title).
+- The hidden sync collection is only created while the device is in step with the server, so no empty "Untitled Collection" appears.
+
 ## v1.0.0 - 2026-09-28
 
 First public release.
