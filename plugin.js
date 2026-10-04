@@ -5441,8 +5441,11 @@ Object.assign(WbBoard.prototype, {
 			await this.noteEnsureLines(n); const got = await this.noteItems(n); if (!got) return null; const range = this.noteRange(n, got.rec, got.items); if (!range) return null; lines = range.tops;
 		}
 		const guids = [];
+		const firstAfter = anchor ? liGuid(anchor) : null;
 		for (const li of lines) { let m = null; try { m = await li.move(parentTarget, anchor); } catch (e) { console.warn('[Whiteboard] move failed', e); } if (!m) break; anchor = m; guids.push(liGuid(m) || liGuid(li)); }
 		if (!guids.length) return null;
+		// a heading's children render flush since Thymer 1.0.20: indent them the way Tab does
+		if (isHeading(parentTarget)) await indentUnderHeading(liGuid(parentTarget), firstAfter, guids);
 		if (container && guids.length === lines.length) { try { await container.delete(); } catch (e) {} }
 		n.lines = guids; n.lineGuid = guids[0]; n._snap = null; return guids;
 	},
@@ -5535,10 +5538,10 @@ Object.assign(WbBoard.prototype, {
 // what a pick DOES live here, with wb- classes. A pick MOVES the card's block: page top/bottom, under/after a heading,
 // nested under / after a line, or today's Journal.
 // ===========================================================================
+const WB_DEST_PLACEHOLDER = 'Search pages, lines, or a date for the Journal (e.g. "tomorrow")';
 // <<<SHARED destination-picker — GENERATED, DO NOT EDIT HERE.
 // Source: shared/destination-picker.js  |  regenerate: node tools/sync-picker.mjs
 function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
-const WB_DEST_PLACEHOLDER = 'Search pages, lines, or a date for the Journal (e.g. "tomorrow")';
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function rowGuid(o) { try { return o && o._getRow ? o._getRow().guid : null; } catch (e) { return null; } }
 // A collection's icon comes from its CONFIGURATION (`icon`); PluginCollectionAPI
@@ -5591,6 +5594,47 @@ function outlineHeadings(items, recGuid, skip) {
 	};
 	walk(recGuid, 0);
 	return out;
+}
+// Thymer 1.0.20 made headings own the lines that follow them and draws a
+// heading's children FLUSH with the heading, so nesting content under a heading
+// no longer shows as an indent. Thymer's own Tab indents such a line with
+// OVERINDENT (`oind`), but the public line.move() always writes oind 0. After the
+// move, re-issue each root's final position through the editor's mutation queue
+// with oind 1: exactly the mutation Tab produces. `guids` must be in final
+// document order, the first sitting right after `afterGuid` (null = first child).
+// The queue silently DROPS a mutation for a line the editor has not loaded (a
+// line moved off a page no panel shows, e.g. a Whiteboard card), so load each one
+// first with getOrLoadItem, the app's own loader.
+// The one helper here with a side effect, kept shared so the internal call lives
+// in one place. Best effort: without these internals the lines stay flush, which
+// is where move() already put them. Measured 2026-10-04, app 1.0.20.
+async function indentUnderHeading(headingGuid, afterGuid, guids) {
+	const ops = window.g_universe && window.g_universe.operations;
+	if (!headingGuid || !ops || typeof ops.enqueueMutation !== 'function') return false;
+	let after = afterGuid || null;
+	for (const g of (guids || [])) {
+		if (!g) continue;
+		try {
+			if (typeof ops.getOrLoadItem === 'function') await ops.getOrLoadItem(g);
+			ops.enqueueMutation({ action: 'move_tree', item_guid: g, value: [headingGuid, after, 1] });
+		} catch (e) { return false; }
+		after = g;
+	}
+	return true;
+}
+// The anchor for content nested under `target`. Under a plain line: after its
+// last child, as before. Under a HEADING: right below the heading, after any
+// lines already indented there. Thymer folds an indented line that follows a
+// FLUSH one into that line (measured 2026-10-04), so appending at the end of a
+// section would quietly make the content a child of whatever line ends it.
+// Directly under the heading the indent survives, exactly as Thymer's own Tab.
+function nestAnchor(items, target, skip) {
+	const tg = liGuid(target);
+	const kids = (items || []).filter((li) => liRaw(li).pguid === tg && !(skip && skip.has(liGuid(li))));
+	if (!isHeading(target)) return lastOf(kids);
+	let anchor = null;
+	for (const li of kids) { if ((liRaw(li).oind || 0) >= 1) anchor = li; else break; }
+	return anchor;
 }
 function lastOf(arr) { return arr && arr.length ? arr[arr.length - 1] : null; }
 // The move target for "place directly after `target` at the same level":
@@ -5675,7 +5719,6 @@ function segmentsFromState(state) {
 	return segs;
 }
 // >>>SHARED
-function lastChildOf(items, parentGuid) { return lastOf((items || []).filter((li) => liRaw(li).pguid === parentGuid)); }
 async function lastTopLevel(rec) { try { const items = await rec.getLineItems(); return lastOf(topLevelItems(items, rowGuid(rec))); } catch (e) { return null; } }
 const WB_DEST_CSS = [
 '.wb-dpop{position:fixed;z-index:100003;display:block;width:min(560px,calc(100vw - 24px));background:var(--cmdpal-bg-color,var(--wb-surface,#26262b));color:var(--cmdpal-fg-color,var(--text-color,#ddd));font-family:var(--font-mono,inherit);border:1px solid var(--wb-line,rgba(127,127,127,.4));border-radius:var(--radius-normal,3px);box-shadow:0 16px 48px rgba(0,0,0,.5);overflow:hidden;}',
@@ -5869,12 +5912,12 @@ Object.assign(WbBoard.prototype, {
 				destRec = this.plugin.data.getRecord(dest.pageGuid); if (!destRec) { this.plugin.toast('Destination page not found.'); return; }
 				label = dest.name; const ditems = await destRec.getLineItems(); const target = ditems.find((x) => liGuid(x) === dest.guid);
 				if (!target) { parentTarget = destRec; anchor = lastOf(topLevelItems(ditems, rowGuid(destRec))); label = dest.pageName || label; }
-				else if (indent) { parentTarget = target; anchor = lastChildOf(ditems, dest.guid); }
+				else if (indent) { parentTarget = target; anchor = nestAnchor(ditems, target, null); }
 				else { parentTarget = siblingParent(ditems, target, destRec); anchor = target; }
 			} else {
 				destRec = this.plugin.data.getRecord(dest.guid); if (!destRec) { this.plugin.toast('Destination page not found.'); return; }
 				label = dest.name;
-				if (dest.afterHeadingGuid) { const ditems = await destRec.getLineItems(); const heading = ditems.find((x) => liGuid(x) === dest.afterHeadingGuid); label += ' › ' + (dest.headingText || 'heading'); if (!heading) { parentTarget = destRec; anchor = lastOf(topLevelItems(ditems, rowGuid(destRec))); } else if (indent) { parentTarget = heading; anchor = lastChildOf(ditems, dest.afterHeadingGuid); } else { parentTarget = siblingParent(ditems, heading, destRec); anchor = heading; } }
+				if (dest.afterHeadingGuid) { const ditems = await destRec.getLineItems(); const heading = ditems.find((x) => liGuid(x) === dest.afterHeadingGuid); label += ' › ' + (dest.headingText || 'heading'); if (!heading) { parentTarget = destRec; anchor = lastOf(topLevelItems(ditems, rowGuid(destRec))); } else if (indent) { parentTarget = heading; anchor = nestAnchor(ditems, heading, null); } else { parentTarget = siblingParent(ditems, heading, destRec); anchor = heading; } }
 				else if (dest.atTop) { parentTarget = destRec; anchor = null; label += ' › Top'; }
 				else { parentTarget = destRec; anchor = await lastTopLevel(destRec); }
 			}
