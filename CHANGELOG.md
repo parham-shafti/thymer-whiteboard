@@ -3,7 +3,7 @@
 ## v1.0.4 - 2026-10-04
 
 Fixed:
-- Lines sent under a heading are indented under it again (Thymer 1.0.20 draws a heading's children flush).
+- Nest under a heading works again. Since Thymer 1.0.20 a heading's content sits flush with the heading, so lines sent from a card to a page landed right under the heading with no indent. If you choose the option to indent your content, they're now indented under the heading, the same way Tab does it.
 
 Changed:
 - The diagnostics report starts with the plugin version, so a report from a phone says which code it ran.
