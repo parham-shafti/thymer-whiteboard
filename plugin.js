@@ -3,7 +3,7 @@
 // Rendering is DOM + SVG inside one transformed layer (no <canvas>), so text is real text.
 // See PLAN.md / RESEARCH.md / HANDOVER.md in Thymer_plugins/whiteboard.
 
-const WB_VERSION = '1.0.3';
+const WB_VERSION = '1.0.4';
 const WB_PANEL = 'whiteboard-board';
 const WB_BOARDS = 'Boards';
 const WB_SCENE_FILE = 'whiteboard.json';
@@ -6311,7 +6311,7 @@ const WB_TAP_MS = 350, WB_TAP_PX = 24, WB_HOLD_MS = 400, WB_HOLD_PX = 8;
 	};
 	WbBoard.prototype.diagnostics = function () {
 		const L = []; const vv = window.visualViewport; const hr = this.host.getBoundingClientRect(); const cr = this.canvas.getBoundingClientRect();
-		L.push('Whiteboard diagnostics ' + new Date().toISOString() + ' gen ' + (window.__wbGen || 0));
+		L.push('Whiteboard diagnostics ' + new Date().toISOString() + ' v' + WB_VERSION + ' gen ' + (window.__wbGen || 0)); // the version first: a phone's report must say which code it ran (2026-10-04)
 		L.push('ua ' + navigator.userAgent);
 		L.push('window ' + window.innerWidth + 'x' + window.innerHeight + ' dpr ' + window.devicePixelRatio + ' visualViewport ' + (vv ? Math.round(vv.width) + 'x' + Math.round(vv.height) + ' scale ' + vv.scale + ' offset ' + Math.round(vv.offsetLeft) + ',' + Math.round(vv.offsetTop) : 'none'));
 		L.push('mobileType ' + (document.documentElement.dataset.mobileType || 'unset') + ' maxTouchPoints ' + navigator.maxTouchPoints + ' coarse ' + (window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : '?') + ' hoverNone ' + (window.matchMedia ? window.matchMedia('(hover: none)').matches : '?') + ' touchClass ' + this.host.classList.contains('wb-touch'));

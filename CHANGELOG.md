@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.4 - 2026-10-04
+
+Fixed:
+- Lines sent under a heading are indented under it again (Thymer 1.0.20 draws a heading's children flush).
+
+Changed:
+- The diagnostics report starts with the plugin version, so a report from a phone says which code it ran.
+
 ## v1.0.3 - 2026-09-29
 
 Fixed:
