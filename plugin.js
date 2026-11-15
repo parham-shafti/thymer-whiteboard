@@ -6298,6 +6298,8 @@ const WB_TAP_MS = 350, WB_TAP_PX = 24, WB_HOLD_MS = 400, WB_HOLD_PX = 8;
 		this.pointers = new Map(); this._diag = []; this.pinch = null; this._lastTap = null; this._hold = null;
 		if (wbTouchUI()) this.host.classList.add('wb-touch');
 		baseBindInput.call(this);
+		try { const b = JSON.parse(localStorage.getItem('wb_beat') || 'null'); if (b && b.state === 'open') { wbTrace('KILLED ' + Math.round((Date.now() - b.t) / 1000) + 's ago: ' + b.g + ' z ' + b.z + ' visible ' + b.vis + ' biggest ' + b.bigMpx + 'Mpx imgs ' + b.imgs + ' (' + b.imgMpx + 'Mpx) dom ' + b.dom + ' gesture ' + b.gest + ' v' + b.v); b.state = 'reported'; localStorage.setItem('wb_beat', JSON.stringify(b)); } } catch (e) {}
+		{ const hid = () => { if (document.visibilityState === 'hidden') this.beat('hidden'); else { this._beatAt = 0; this.beat(); } }; const gone = () => this.beat('closed'); document.addEventListener('visibilitychange', hid); window.addEventListener('pagehide', gone); const off = () => { document.removeEventListener('visibilitychange', hid); window.removeEventListener('pagehide', gone); }; this.disposers.push(off); WB_LISTENERS.push(off); }
 		// A finger's lift can land on an element that stops propagation (a toolbar, a note editor), and then the canvas never
 		// hears it: the pointer stayed in the registry and pinchRest stayed on, which swallowed every touch until the next
 		// full lift (measured with synthetic events). So the registry is settled at DOCUMENT level, capture phase, before
@@ -6360,10 +6362,26 @@ const WB_TAP_MS = 350, WB_TAP_PX = 24, WB_HOLD_MS = 400, WB_HOLD_PX = 8;
 	// While fingers move the board only the camera changes, and a finger reports several moves per frame (each pinch finger its
 	// own). The transform goes on at once; the rest of applyCamera (overlay rebuild, the toolbar, timers) runs once per frame, and
 	// in full when the last finger lifts. On a 420-element board every move did all of it, which made the phone slow (2026-10-09).
+	// Crash log (2026-10-09). Thymer's iOS app kills the page on a big board while zooming in (black screen, the app restarts it);
+	// Safari does not, and no inspector reaches the app. So a touch board writes its state every half second, and marks the end
+	// when the page is hidden or closed. A beat still 'open' at the next mount means the page died: it goes into the mount trace.
+	WbBoard.prototype.beat = function (end) {
+		if (!this.host.classList.contains('wb-touch') || !this.rec) return;
+		const now = Date.now(); if (!end && this._beatAt && now - this._beatAt < 500) return; this._beatAt = now;
+		try {
+			if (end) { const b = JSON.parse(localStorage.getItem('wb_beat') || 'null'); if (b && b.state === 'open') { b.state = end; localStorage.setItem('wb_beat', JSON.stringify(b)); } return; }
+			let imgs = 0, px = 0; for (const img of this.host.querySelectorAll('.wb-image img')) { imgs++; px += (img.naturalWidth || 0) * (img.naturalHeight || 0); }
+			const c = this.cam; const r = this.canvas.getBoundingClientRect(); const vx = -c.x / c.z, vy = -c.y / c.z, vX = vx + r.width / c.z, vY = vy + r.height / c.z;
+			let vis = 0, big = 0; for (const n of this.scene.nodes) { if (n.x < vX && n.x + n.w > vx && n.y < vY && n.y + n.h > vy) { vis++; big = Math.max(big, n.w * n.h); } }
+			const dpr = window.devicePixelRatio || 1; const bigPx = Math.round(big * c.z * c.z * dpr * dpr / 1e6);
+			localStorage.setItem('wb_beat', JSON.stringify({ t: now, g: this.rec.guid.slice(0, 6), z: Number(c.z.toFixed(3)), vis, bigMpx: bigPx, imgs, imgMpx: Number((px / 1e6).toFixed(1)), dom: this.host.getElementsByTagName('*').length, gest: !!this._touchCam, v: WB_VERSION, state: 'open' }));
+		} catch (e) {}
+	};
 	WbBoard.prototype.touchCamOn = function () { this._touchCam = true; };
 	WbBoard.prototype.touchCamOff = function () { if (!this._touchCam) return; this._touchCam = false; if (this._camRaf) { cancelAnimationFrame(this._camRaf); this._camRaf = 0; } if (!this.destroyed) this.applyCamera(); };
 	const baseApplyCameraTouch = WbBoard.prototype.applyCamera;
 	WbBoard.prototype.applyCamera = function () {
+		this.beat();
 		if (!this._touchCam) return baseApplyCameraTouch.call(this);
 		const c = this.cam; const g = WB_GRID * 2 * c.z;
 		this.world.style.transform = 'translate(' + c.x + 'px,' + c.y + 'px) scale(' + c.z + ')';
@@ -6668,7 +6686,7 @@ const WB_PHONE_CSS = [
 		try { const cs = getComputedStyle(this.host); for (const v of ['--wb-accent', '--wb-bg', '--wb-card-line', '--wb-card', '--wb-edge', '--wb-faint', '--wb-font', '--wb-grid', '--wb-line', '--wb-muted', '--wb-radius', '--wb-shadow', '--wb-sticky-shadow', '--wb-surface', '--wb-text']) { const val = cs.getPropertyValue(v); if (val) c.style.setProperty(v, val); } } catch (e) {}
 		c.classList.add('wb-docked'); document.body.appendChild(c);
 	};
-	WbBoard.prototype.destroy = function () { try { if (this.ctx && this.ctx.parentElement === document.body) { this.ctx.remove(); this.ctx = null; } } catch (e) {} try { this.teardownPhoneChrome(); document.body.classList.remove('wb-phone-board'); } catch (e) {} return baseDestroyPhone.call(this); };
+	WbBoard.prototype.destroy = function () { try { this.beat('closed'); } catch (e) {} try { if (this.ctx && this.ctx.parentElement === document.body) { this.ctx.remove(); this.ctx = null; } } catch (e) {} try { this.teardownPhoneChrome(); document.body.classList.remove('wb-phone-board'); } catch (e) {} return baseDestroyPhone.call(this); };
 	// A note card's editor is a SECOND panel, and a phone shows one: tapping Edit replaced the board with an empty panel (his
 	// recording 2026-09-22). On the phone the board's own panel goes to the card's block instead (the same navigation the float
 	// editor uses), and a Done button in Thymer's Capture style brings the board back through openBoard, our own proven path;
