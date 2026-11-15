@@ -1,8 +1,9 @@
 # Changelog
 
-## v1.0.5 - 2026-10-09
+## v1.0.5 - 2026-11-15
 
 Fixed:
+- Dragging a line from a page onto a board works again. After a Thymer update the board could not find the line's page and said "Could not find the page of that line."
 - Zooming with two fingers and moving the board with one finger are smooth again on a phone, also on a large board. The board used to redraw everything for every small finger movement; now it follows your fingers and finishes the rest when you let go.
 - In Thymer's iOS app, a selected frame no longer covers the toolbar at the bottom of the screen.
 
