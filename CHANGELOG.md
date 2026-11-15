@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.5 - 2026-10-09
+
+Fixed:
+- Zooming with two fingers and moving the board with one finger are smooth again on a phone, also on a large board. The board used to redraw everything for every small finger movement; now it follows your fingers and finishes the rest when you let go.
+- In Thymer's iOS app, a selected frame no longer covers the toolbar at the bottom of the screen.
+
 ## v1.0.4 - 2026-10-04
 
 Fixed:

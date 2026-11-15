@@ -3,7 +3,7 @@
 // Rendering is DOM + SVG inside one transformed layer (no <canvas>), so text is real text.
 // See PLAN.md / RESEARCH.md / HANDOVER.md in Thymer_plugins/whiteboard.
 
-const WB_VERSION = '1.0.4';
+const WB_VERSION = '1.0.5';
 const WB_PANEL = 'whiteboard-board';
 const WB_BOARDS = 'Boards';
 const WB_SCENE_FILE = 'whiteboard.json';
@@ -1186,7 +1186,7 @@ class WbBoard {
 	// --- camera ----------------------------------------------------------------
 	applyCamera() {
 		const c = this.cam;
-		this.world.style.transform = 'translate(' + c.x + 'px,' + c.y + 'px) scale(' + c.z + ')'; this.world.style.setProperty('--wb-z', String(c.z));
+		this.world.style.transform = 'translate(' + c.x + 'px,' + c.y + 'px) scale(' + c.z + ')'; if (!this._touchCam && this._wbz !== c.z) { this._wbz = c.z; this.world.style.setProperty('--wb-z', String(c.z)); } // the variable restyles every element: only when it changed, and not while fingers move the board
 		this.canvas.style.backgroundSize = (WB_GRID * 2 * c.z) + 'px ' + (WB_GRID * 2 * c.z) + 'px';
 		this.canvas.style.backgroundPosition = (c.x % (WB_GRID * 2 * c.z)) + 'px ' + (c.y % (WB_GRID * 2 * c.z)) + 'px';
 		if (this.zoomLabel) this.zoomLabel.textContent = Math.round(c.z * 100) + '%';
@@ -1426,7 +1426,7 @@ class WbBoard {
 		on(cv, 'wheel', (e) => this.onWheel(e), { passive: false });
 		// Thymer moves focus to <body> after every mousedown, so keys are taken at document level
 		// whenever this board's panel is the focused one (or the event starts inside the host).
-		const mine = (e) => this.host.contains(e.target) || ((e.target === document.body || e.target === document.documentElement) && this.isActivePanel());
+		const mine = (e) => this.host.contains(e.target) || !!(this.ctx && this.ctx.contains(e.target)) || ((e.target === document.body || e.target === document.documentElement) && this.isActivePanel());
 		on(document, 'keydown', (e) => { if (mine(e)) this.onKey(e); }, true);
 		on(document, 'keyup', (e) => { if (mine(e) && e.code === 'Space') { this.space = false; cv.classList.remove('wb-space'); } }, true);
 		on(document, 'visibilitychange', () => { if (document.visibilityState === 'hidden') this.flush(); }); on(window, 'pagehide', () => this.flush()); on(window, 'beforeunload', () => this.flush());
@@ -1437,7 +1437,7 @@ class WbBoard {
 		const onDragOver = (e) => { if (!cv.contains(e.target)) return; if (e.dataTransfer && [...(e.dataTransfer.items || [])].some((it) => it.kind === 'file')) { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy'; } };
 		on(window, 'drop', onDrop, true); on(window, 'dragover', onDragOver, true); on(window, 'dragenter', onDragOver, true);
 		// pointerdown outside the host commits an edit and drops the context toolbar focus
-		const outside = (e) => { if (!this.host.contains(e.target) && this.editing) this.commitEdit(); if (this.nativeEdit && !this.host.contains(e.target) && !(e.target.closest && e.target.closest('.prop-edit-field, .cmdpal--inline, .autocomplete, .datepicker, .dropdown-menu, .popup'))) this.endNativeEdit(true); };
+		const outside = (e) => { const own = this.host.contains(e.target) || !!(this.ctx && this.ctx.contains(e.target)); if (!own && this.editing) this.commitEdit(); if (this.nativeEdit && !own && !(e.target.closest && e.target.closest('.prop-edit-field, .cmdpal--inline, .autocomplete, .datepicker, .dropdown-menu, .popup'))) this.endNativeEdit(true); };
 		document.addEventListener('pointerdown', outside, true); this.disposers.push(() => document.removeEventListener('pointerdown', outside, true));
 		const themeObs = new MutationObserver(() => this.applyTheme()); themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme'] }); this.disposers.push(() => themeObs.disconnect());
 		const ro = new ResizeObserver(() => { this.renderOverlay(); this.placeCtx(); }); ro.observe(cv); this.disposers.push(() => ro.disconnect());
@@ -5498,7 +5498,7 @@ Object.assign(WbBoard.prototype, {
 	const baseOnDbl = WbBoard.prototype.onDbl;
 	WbBoard.prototype.onDbl = function (e) { let hit = this.hitNode(e); if (!hit && this.hitAt) { try { hit = this.hitAt(e); } catch (x) {} } if (hit && this.isNoteNode(hit)) { this.noteEdit(hit); return; } return baseOnDbl.call(this, e); };
 	const baseApplyCamera = WbBoard.prototype.applyCamera;
-	WbBoard.prototype.applyCamera = function () { baseApplyCamera.call(this); for (const n of this.scene.nodes) if (this.isNoteNode(n)) { const el = this.nodeEls.get(n.id); if (el) this.notePlaceCard(n, el); } if (this._noteEditor) this.notePlaceEditor(); };
+	WbBoard.prototype.applyCamera = function () { baseApplyCamera.call(this); if (!this._touchCam) for (const n of this.scene.nodes) if (this.isNoteNode(n)) { const el = this.nodeEls.get(n.id); if (el) this.notePlaceCard(n, el); } if (this._noteEditor) this.notePlaceEditor(); };
 	const baseRenderNodesFast = WbBoard.prototype.renderNodesFast;
 	WbBoard.prototype.renderNodesFast = function (items) { baseRenderNodesFast.call(this, items); for (const n of items) if (this.isNoteNode(n)) { const el = this.nodeEls.get(n.id); if (el) this.notePlaceCard(n, el); } };
 	const baseRenderOverlay = WbBoard.prototype.renderOverlay;
@@ -6302,7 +6302,7 @@ const WB_TAP_MS = 350, WB_TAP_PX = 24, WB_HOLD_MS = 400, WB_HOLD_PX = 8;
 		// hears it: the pointer stayed in the registry and pinchRest stayed on, which swallowed every touch until the next
 		// full lift (measured with synthetic events). So the registry is settled at DOCUMENT level, capture phase, before
 		// anything else can eat the event; onUp only reads what is left.
-		const settle = (e) => { if (WB_GEN !== window.__wbGen || this.destroyed || e.pointerType !== 'touch') return; this.pointers.delete(e.pointerId); if (this.pinch && this.pinch.ids.includes(e.pointerId)) this.pinchEnd(); if (![...this.pointers.values()].some((p) => p.type === 'touch')) { this.pinchRest = false; this.holdCancel(); } };
+		const settle = (e) => { if (WB_GEN !== window.__wbGen || this.destroyed || e.pointerType !== 'touch') return; this.pointers.delete(e.pointerId); if (this.pinch && this.pinch.ids.includes(e.pointerId)) this.pinchEnd(); if (![...this.pointers.values()].some((p) => p.type === 'touch')) { this.pinchRest = false; this.holdCancel(); this.touchCamOff(); } };
 		for (const ev of ['pointerup', 'pointercancel']) { document.addEventListener(ev, settle, true); const off = () => document.removeEventListener(ev, settle, true); this.disposers.push(off); WB_LISTENERS.push(off); }
 	};
 	// a ring of the last input events, so the phone can tell us what it actually delivered
@@ -6320,6 +6320,7 @@ const WB_TAP_MS = 350, WB_TAP_PX = 24, WB_HOLD_MS = 400, WB_HOLD_PX = 8;
 		L.push('panelBar ' + (bar ? Math.round(br.width) + 'x' + Math.round(br.height) + ' at ' + Math.round(br.top) : 'none') + ' panels ' + document.querySelectorAll('.panel').length + ' cam ' + Math.round(this.cam.x) + ',' + Math.round(this.cam.y) + ' z ' + this.cam.z.toFixed(2) + ' nodes ' + this.scene.nodes.length);
 		const st = wbSyncStatus();
 		L.push('save ' + (this.saveState || 'clean') + ' dirty ' + !!this.dirty + ' knownRev ' + this.knownRev + ' | sync ready ' + wbSyncReady() + ' why ' + (WB_SYNC.why || '-') + ' hook ' + (WB_SYNC.hookGen === WB_GEN) + ' processedAgo ' + (WB_SYNC.processedAt ? Math.round((Date.now() - WB_SYNC.processedAt) / 1000) + 's' : 'never') + ' onLine ' + navigator.onLine + ' | status ' + (st ? 'online ' + st.isOnline + ' ws ' + st.hasWebsocket + ' syncing ' + st.isSyncing + ' reply ' + (st.lastSyncReplyTime ? 'yes' : 'no') : 'none'));
+		if (this._ctxDiag) L.push(this._ctxDiag);
 		L.push('mount trace (newest last):'); for (const x of wbTraceRead()) L.push('  ' + x);
 		L.push('events (newest last):'); for (const x of this._diag) L.push('  ' + x);
 		return L.join('\n');
@@ -6344,7 +6345,7 @@ const WB_TAP_MS = 350, WB_TAP_PX = 24, WB_HOLD_MS = 400, WB_HOLD_PX = 8;
 		if (this.drag) { const d = this.drag; if (d.kind === 'move' && d.orig) d.items.forEach((n, i) => { const o = d.orig[i]; if (o) { n.x = o.x; n.y = o.y; } }); try { this.canvas.releasePointerCapture(d.pid); } catch (x) {} this.drag = null; this.canvas.classList.remove('wb-panning'); this.renderAll(); }
 		this.holdCancel();
 		const a = this.pointers.get(ids[0]), b = this.pointers.get(ids[1]);
-		this.pinch = { ids, dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }; this._pinchIds = ids.slice();
+		this.pinch = { ids, dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }; this._pinchIds = ids.slice(); this.touchCamOn();
 		for (const id of ids) { try { this.canvas.setPointerCapture(id); } catch (x) {} }
 		return true;
 	};
@@ -6355,6 +6356,19 @@ const WB_TAP_MS = 350, WB_TAP_PX = 24, WB_HOLD_MS = 400, WB_HOLD_PX = 8;
 		if (Math.abs(f - 1) > 0.002) this.zoomAt(mid.x - r.left, mid.y - r.top, f);
 		this.cam.x += mid.x - p.mid.x; this.cam.y += mid.y - p.mid.y; this.applyCamera();
 		p.dist = dist; p.mid = mid;
+	};
+	// While fingers move the board only the camera changes, and a finger reports several moves per frame (each pinch finger its
+	// own). The transform goes on at once; the rest of applyCamera (overlay rebuild, the toolbar, timers) runs once per frame, and
+	// in full when the last finger lifts. On a 420-element board every move did all of it, which made the phone slow (2026-10-09).
+	WbBoard.prototype.touchCamOn = function () { this._touchCam = true; };
+	WbBoard.prototype.touchCamOff = function () { if (!this._touchCam) return; this._touchCam = false; if (this._camRaf) { cancelAnimationFrame(this._camRaf); this._camRaf = 0; } if (!this.destroyed) this.applyCamera(); };
+	const baseApplyCameraTouch = WbBoard.prototype.applyCamera;
+	WbBoard.prototype.applyCamera = function () {
+		if (!this._touchCam) return baseApplyCameraTouch.call(this);
+		const c = this.cam; const g = WB_GRID * 2 * c.z;
+		this.world.style.transform = 'translate(' + c.x + 'px,' + c.y + 'px) scale(' + c.z + ')';
+		this.canvas.style.backgroundSize = g + 'px ' + g + 'px'; this.canvas.style.backgroundPosition = (c.x % g) + 'px ' + (c.y % g) + 'px';
+		if (!this._camRaf) this._camRaf = requestAnimationFrame(() => { this._camRaf = 0; if (!this.destroyed && this._touchCam) baseApplyCameraTouch.call(this); });
 	};
 	WbBoard.prototype.pinchEnd = function () { this._pinchIds = this.pinch ? this.pinch.ids.slice() : this._pinchIds; this.pinch = null; this.pinchRest = true; }; // the finger still down must not start a drag
 	// --- long-press: still for 400 ms on an element opens its Selection menu ---
@@ -6390,7 +6404,7 @@ const WB_TAP_MS = 350, WB_TAP_PX = 24, WB_HOLD_MS = 400, WB_HOLD_PX = 8;
 			// one finger on empty canvas pans (Select mode turns it back into a marquee); a mouse keeps its marquee
 			if (!onThing && this.tool === 'select' && !this.touchSelectMode && !this.space) {
 				this.plugin.closeMenus(); if (this.editing) this.commitEdit();
-				e.preventDefault(); this.startDrag(e, { kind: 'pan', cx: this.cam.x, cy: this.cam.y }); this.canvas.classList.add('wb-panning');
+				e.preventDefault(); this.startDrag(e, { kind: 'pan', cx: this.cam.x, cy: this.cam.y }); this.canvas.classList.add('wb-panning'); this.touchCamOn();
 				if (looseFrame) this.holdArm(e, hit); // a still press on the frame selects it and opens its menu
 				return;
 			}
@@ -6413,6 +6427,7 @@ const WB_TAP_MS = 350, WB_TAP_PX = 24, WB_HOLD_MS = 400, WB_HOLD_PX = 8;
 		this.diagNote(e, cancelled ? 'cancel' : 'up');
 		if (this.touchOf(e)) {
 			this.pointers.delete(e.pointerId);
+			if (![...this.pointers.values()].some((p) => p.type === 'touch')) this.touchCamOff();
 			const wasPinchFinger = this._pinchIds && this._pinchIds.includes(e.pointerId);
 			if (this.pinch || wasPinchFinger || this.pinchRest) { if (this.drag) { try { this.canvas.releasePointerCapture(this.drag.pid); } catch (x) {} this.drag = null; } return; } // a pinch finger lifting is never a tap
 			this.holdCancel();
@@ -6454,8 +6469,8 @@ const WB_PHONE_CSS = [
 '.wb-strip .wb-sb{width:44px;height:44px;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-normal,3px);color:var(--text-color);flex:0 0 auto;}',
 '.wb-strip .wb-sb.is-dim{opacity:.45;}.wb-strip .wb-sb svg{width:18px;height:18px;}.wb-strip .wb-sb.wb-sb-more svg{width:20px;height:20px;}',
 '.wb-strip .wb-stitle{flex:1 1 auto;min-width:0;text-align:left;font-size:12px;font-weight:600;color:var(--text-color);white-space:nowrap;overflow:hidden;padding:0 4px;}', // left-aligned: a long name shows its START, a centred one lost both ends
-'.wb-host.wb-phone .wb-ctx{position:fixed !important;left:calc(var(--mobile-viewport-left,0px) + 12px) !important;right:auto !important;top:auto !important;width:calc(var(--mobile-viewport-width,100vw) - 24px);bottom:calc(var(--mobile-viewport-bottom,0px) + max(12px,var(--mobile-visible-safe-area-bottom,0px))) !important;max-width:none !important;height:56px;box-sizing:border-box;padding:6px !important;flex-wrap:nowrap !important;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;z-index:100001;}',
-'.wb-host.wb-phone .wb-ctx::-webkit-scrollbar{display:none;}.wb-host.wb-phone .wb-ctx .wb-tb{height:44px;min-width:44px;flex:0 0 auto;}.wb-host.wb-phone .wb-ctx .wb-tsep{height:26px;}',
+'.wb-ctx.wb-docked{position:fixed !important;left:calc(var(--mobile-viewport-left,0px) + 12px) !important;right:auto !important;top:auto !important;width:calc(var(--mobile-viewport-width,100vw) - 24px);bottom:calc(var(--mobile-viewport-bottom,0px) + max(12px,var(--mobile-visible-safe-area-bottom,0px))) !important;max-width:none !important;height:56px;box-sizing:border-box;padding:6px !important;flex-wrap:nowrap !important;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;z-index:100001;}',
+'.wb-ctx.wb-docked::-webkit-scrollbar{display:none;}.wb-ctx.wb-docked .wb-tb{height:44px;min-width:44px;flex:0 0 auto;}.wb-ctx.wb-docked .wb-tsep{height:26px;}',
 // Our own popovers are placed by an anchor's rect; on the phone the anchor may be off screen or inside the overflow, so every
 // one of them is pinned to the bottom as a sheet instead. A stylesheet !important beats the inline left/top they set.
 'body.wb-phone-board .wb-sheet,body.wb-phone-board .wb-pop,body.wb-phone-board .wb-picker,body.wb-phone-board .wb-rename,body.wb-phone-board .wb-confirm,body.wb-phone-board .wb-diag,body.wb-phone-board .wb-thread,body.wb-phone-board .wb-dpop,body.wb-phone-board .wb-tagpop{position:fixed !important;left:var(--mobile-viewport-left,0px) !important;right:auto !important;top:auto !important;bottom:calc(var(--mobile-viewport-bottom,0px) + var(--mobile-editor-toolbar-offset,0px)) !important;width:var(--mobile-viewport-width,100vw) !important;max-width:none !important;box-sizing:border-box;padding-bottom:calc(16px + var(--mobile-visible-safe-area-bottom,0px)) !important;border-radius:var(--radius-normal,3px) var(--radius-normal,3px) 0 0 !important;border-left:0 !important;border-right:0 !important;border-bottom:0 !important;}',
@@ -6617,6 +6632,24 @@ const WB_PHONE_CSS = [
 		this.ctxOverflow = overBtns;
 		if (overBtns.length) { c.appendChild(this.sep()); c.appendChild(this.tb(WB_I.more, 'More', (b) => this.ctxOverflowSheet(b))); }
 		if (del) { c.appendChild(this.sep()); c.appendChild(del); }
+		requestAnimationFrame(() => { if (this.ctx === c && !this.destroyed) this._ctxDiag = this.ctxStackDiag(c); });
+	};
+	// What really sits on top of the docked toolbar (a frame was drawn over it in Thymer's iOS app, 2026-10-09): the element the
+	// browser hits at three points along the bar, and every ancestor that could own a layer of its own.
+	WbBoard.prototype.ctxStackDiag = function (c) {
+		try {
+			const r = c.getBoundingClientRect(); const y = r.top + r.height / 2; const L = ['ctx ' + Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' z ' + getComputedStyle(c).zIndex + ' pos ' + getComputedStyle(c).position];
+			const nm = (el) => !el ? 'none' : (el.tagName.toLowerCase() + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).slice(0, 3).join('.') : ''));
+			for (const x of [r.left + 22, r.left + r.width / 2, r.right - 22]) { const el = document.elementFromPoint(x, y); L.push('  hit ' + Math.round(x) + ' ' + (el && c.contains(el) ? 'toolbar' : nm(el))); }
+			for (let el = c.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+				const cs = getComputedStyle(el); const f = [];
+				if (cs.transform !== 'none') f.push('transform ' + cs.transform.slice(0, 40)); if (cs.filter !== 'none') f.push('filter'); if (cs.willChange !== 'auto') f.push('will-change ' + cs.willChange);
+				if (cs.contain !== 'none') f.push('contain ' + cs.contain); if (cs.zIndex !== 'auto') f.push('z ' + cs.zIndex); if (cs.isolation === 'isolate') f.push('isolate'); if (cs.position === 'fixed' || cs.position === 'sticky') f.push(cs.position);
+				if (cs.overflow !== 'visible') f.push('overflow ' + cs.overflow); if (cs.webkitBackdropFilter && cs.webkitBackdropFilter !== 'none') f.push('backdrop');
+				if (f.length) L.push('  up ' + nm(el) + ': ' + f.join(', '));
+			}
+			return L.join('\n');
+		} catch (e) { return 'ctx diag failed ' + e; }
 	};
 	WbBoard.prototype.ctxOverflowSheet = function (anchor) {
 		const rows = this.ctxOverflow.map((b, i) => { const svg = b.querySelector('svg'); const dot = b.querySelector('.wb-cdot'); const label = b.title || (b.textContent || '').trim() || 'Option'; return { v: String(i), label, svg: svg ? svg.outerHTML : (dot ? '<span class="wb-cdot" style="' + dot.getAttribute('style') + '"></span>' : WB_I.more) }; });
@@ -6626,7 +6659,16 @@ const WB_PHONE_CSS = [
 	const basePlaceCtxPhone = WbBoard.prototype.placeCtx;
 	WbBoard.prototype.placeCtx = function () { if (this.host.classList.contains('wb-phone')) return; return basePlaceCtxPhone.call(this); }; // the phone docks it by CSS
 	const baseDestroyPhone = WbBoard.prototype.destroy;
-	WbBoard.prototype.destroy = function () { try { this.teardownPhoneChrome(); document.body.classList.remove('wb-phone-board'); } catch (e) {} return baseDestroyPhone.call(this); };
+	// The docked toolbar lives under <body> on the phone. Inside the board panel, Thymer's iOS app (2026-10-09) PAINTED a frame over
+	// it although hit-testing put the toolbar on top: WebKit gave the zoomed board a layer of its own above the bar. Out of the
+	// panel nothing of the board can cover it. It takes the board's tokens along, like the sheets, and leaves with the board.
+	WbBoard.prototype.ctxToBody = function () {
+		const c = this.ctx; if (!c) return;
+		for (const old of document.querySelectorAll('body > .wb-ctx.wb-docked')) if (old !== c) old.remove(); // a bar left by an earlier instance
+		try { const cs = getComputedStyle(this.host); for (const v of ['--wb-accent', '--wb-bg', '--wb-card-line', '--wb-card', '--wb-edge', '--wb-faint', '--wb-font', '--wb-grid', '--wb-line', '--wb-muted', '--wb-radius', '--wb-shadow', '--wb-sticky-shadow', '--wb-surface', '--wb-text']) { const val = cs.getPropertyValue(v); if (val) c.style.setProperty(v, val); } } catch (e) {}
+		c.classList.add('wb-docked'); document.body.appendChild(c);
+	};
+	WbBoard.prototype.destroy = function () { try { if (this.ctx && this.ctx.parentElement === document.body) { this.ctx.remove(); this.ctx = null; } } catch (e) {} try { this.teardownPhoneChrome(); document.body.classList.remove('wb-phone-board'); } catch (e) {} return baseDestroyPhone.call(this); };
 	// A note card's editor is a SECOND panel, and a phone shows one: tapping Edit replaced the board with an empty panel (his
 	// recording 2026-09-22). On the phone the board's own panel goes to the card's block instead (the same navigation the float
 	// editor uses), and a Done button in Thymer's Capture style brings the board back through openBoard, our own proven path;
@@ -6672,5 +6714,5 @@ const WB_PHONE_CSS = [
 {
 	// The toolbar is placed AFTER the whole override chain has built it; the base class measured a much narrower bar.
 	const baseBuildCtxFinal = WbBoard.prototype.buildCtx;
-	WbBoard.prototype.buildCtx = function () { baseBuildCtxFinal.call(this); if (this.ctx) { this.hoistColor(); this.relabelDelete(); if (this.host.classList.contains('wb-phone')) this.dockCtx(); else this.placeCtx(); } this.host.classList.toggle('wb-has-ctx', !!this.ctx); };
+	WbBoard.prototype.buildCtx = function () { baseBuildCtxFinal.call(this); if (this.ctx) { this.hoistColor(); this.relabelDelete(); if (this.host.classList.contains('wb-phone')) { this.dockCtx(); this.ctxToBody(); } else this.placeCtx(); } this.host.classList.toggle('wb-has-ctx', !!this.ctx); };
 }
