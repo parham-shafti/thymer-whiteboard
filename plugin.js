@@ -2506,6 +2506,15 @@ class WbBoard {
 // ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
+/* A line's page guid. Thymer stopped putting `rguid` on line state in itemsByGuid (2026-11-14):
+ * walk `.parent` to the root `document`, whose guid is the record guid (journal days too). */
+function wbRguid(st) {
+	if (!st) return null;
+	if (st.rguid) return st.rguid;
+	let n = st;
+	for (let i = 0; n.parent && i < 500; i++) n = n.parent;
+	return n !== st && n.type === 'document' ? n.guid : null;
+}
 class Plugin extends AppPlugin {
 	onLoad() {
 		if (WB_LISTENERS.length) { const gone = WB_LISTENERS.splice(0); for (const d of gone) { try { d(); } catch (e) {} } console.warn('[Whiteboard] removed ' + gone.length + ' document listeners left by an earlier instance'); }
@@ -3697,7 +3706,7 @@ Object.assign(Plugin.prototype, {
 		for (const el of els) { if (el.closest && el.closest('.wb-dragghost, .drag-clone')) continue; const cv = el.closest ? el.closest('.wb-canvas') : null; if (!cv) { if (el.closest && el.closest('.wb-host')) continue; else break; } const host = cv.closest('.wb-host'); for (const b of this.boards.values()) if (b.host === host && !b.destroyed) return b; }
 		return null;
 	},
-	recordGuidOfLine(lineGuid) { try { const it = window.g_universe && window.g_universe.itemsByGuid && window.g_universe.itemsByGuid[lineGuid]; if (!it) return null; let cur = it, n = 0; while (cur && n++ < 200) { if (cur.type === 'document' || cur.type === 'page' || (cur.pguid && window.g_universe.itemsByGuid[cur.pguid] && window.g_universe.itemsByGuid[cur.pguid].type === 'collection')) return cur.guid; const parent = cur.pguid ? window.g_universe.itemsByGuid[cur.pguid] : null; if (!parent) return cur.rguid || null; cur = parent; } } catch (e) {} return null; },
+	recordGuidOfLine(lineGuid) { try { const it = window.g_universe && window.g_universe.itemsByGuid && window.g_universe.itemsByGuid[lineGuid]; if (!it) return null; let cur = it, n = 0; while (cur && n++ < 200) { if (cur.type === 'document' || cur.type === 'page' || (cur.pguid && window.g_universe.itemsByGuid[cur.pguid] && window.g_universe.itemsByGuid[cur.pguid].type === 'collection')) return cur.guid; const parent = cur.pguid ? window.g_universe.itemsByGuid[cur.pguid] : null; if (!parent) return wbRguid(it); cur = parent; } } catch (e) {} return null; },
 });
 
 // ===========================================================================
@@ -5842,7 +5851,7 @@ Object.assign(WbBoard.prototype, {
 		for (const rec of this.recordsCache || []) { const guid = rowGuid(rec); if (!guid || skip.has(guid) || pageSeen.has(guid)) continue; const name = (rec.getName && rec.getName()) || ''; if (!name || !parts.every((p) => wbNorm(name).includes(p))) continue; addPage(rec, guid, name); }
 		sortPages();
 		const byGuid = (window.g_universe && window.g_universe.itemsByGuid) || {}; const nowMs = () => performance.now(); const t0 = nowMs();
-		for (const guid in byGuid) { if (lines.length >= 40 || nowMs() - t0 > 150) break; const it = byGuid[guid]; if (!it || it.is_deleted || it.is_trashed || it.type === 'document') continue; if (!it.rguid || skip.has(it.rguid)) continue; const ts = it.text_segments; if (!ts || !ts.length) continue; let raw = ''; for (let i = 0; i + 1 < ts.length; i += 2) { if (typeof ts[i + 1] === 'string') raw += ts[i + 1] + ' '; } const rawNorm = wbNorm(raw); if (!parts.some((p) => rawNorm.includes(p))) continue; considerLine(it.guid || guid, segmentsFromState(it), () => { const r = this.plugin.data.getRecord(it.rguid); return r ? { guid: it.rguid, name: r.getName && r.getName(), collGuid: this.collGuidOf(r) } : null; }); }
+		for (const guid in byGuid) { if (lines.length >= 40 || nowMs() - t0 > 150) break; const it = byGuid[guid]; if (!it || it.is_deleted || it.is_trashed || it.type === 'document') continue; const pg = wbRguid(it); if (!pg || skip.has(pg)) continue; const ts = it.text_segments; if (!ts || !ts.length) continue; let raw = ''; for (let i = 0; i + 1 < ts.length; i += 2) { if (typeof ts[i + 1] === 'string') raw += ts[i + 1] + ' '; } const rawNorm = wbNorm(raw); if (!parts.some((p) => rawNorm.includes(p))) continue; considerLine(it.guid || guid, segmentsFromState(it), () => { const r = this.plugin.data.getRecord(pg); return r ? { guid: pg, name: r.getName && r.getName(), collGuid: this.collGuidOf(r) } : null; }); }
 		this.renderDestResults(list, pages, lines, parts, true, jdate);
 		for (const t of terms) { let res; try { res = await this.plugin.data.searchByQuery(t, 60); } catch (e) { res = {}; } if (my !== this.searchToken) return; for (const r of res.records || []) { const g = rowGuid(r); if (!g || skip.has(g) || pageSeen.has(g)) continue; const name = (r.getName && r.getName()) || ''; if (!parts.every((p) => wbNorm(name).includes(p))) continue; addPage(r, g, name); } for (const li of res.lines || []) { considerLine(li.guid, li.segments, () => { const r = li.getRecord && li.getRecord(); return r ? { guid: rowGuid(r), name: r.getName && r.getName(), collGuid: this.collGuidOf(r) } : null; }); } }
 		if (my !== this.searchToken) return; sortPages(); this.renderDestResults(list, pages, lines, parts, false, jdate);
